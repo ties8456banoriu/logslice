@@ -1,40 +1,46 @@
 package logparser
 
-import (
-	"fmt"
-	"strings"
+import "fmt"
+
+// Format represents a supported log format.
+type Format int
+
+const (
+	// FormatJSON represents newline-delimited JSON log format.
+	FormatJSON Format = iota
 )
 
-// SupportedFormats lists the log formats this package can parse.
-var SupportedFormats = []string{"json"}
-
-// FormatError is returned when an unsupported log format is requested.
+// FormatError is returned when an unsupported format is requested.
 type FormatError struct {
-	Format string
+	Name string
 }
 
 func (e *FormatError) Error() string {
-	return fmt.Sprintf("unsupported log format: %q (supported: %s)",
-		e.Format, strings.Join(SupportedFormats, ", "))
+	return fmt.Sprintf("logparser: unsupported format %q", e.Name)
 }
 
-// ParserConfig holds configuration for creating a log parser.
-type ParserConfig struct {
-	// Format is the log format to parse (e.g. "json").
-	Format string
-	// TimeField is the name of the field containing the timestamp.
-	TimeField string
-	// TimeLayout is the Go time layout string used to parse timestamps.
-	TimeLayout string
+// formatNames maps string names to Format constants.
+var formatNames = map[string]Format{
+	"json": FormatJSON,
 }
 
-// NewParser creates a Parser for the given configuration.
-// Returns a FormatError if the format is not supported.
-func NewParser(cfg ParserConfig) (Parser, error) {
-	switch strings.ToLower(cfg.Format) {
-	case "json", "":
-		return NewJSONParser(cfg.TimeField, cfg.TimeLayout)
+// ParseFormat converts a string name to a Format constant.
+// It returns a FormatError if the name is not recognised.
+func ParseFormat(name string) (Format, error) {
+	f, ok := formatNames[name]
+	if !ok {
+		return 0, &FormatError{Name: name}
+	}
+	return f, nil
+}
+
+// NewParser constructs a Parser for the given Format.
+// It returns a FormatError for unrecognised formats.
+func NewParser(f Format, opts ...Option) (Parser, error) {
+	switch f {
+	case FormatJSON:
+		return NewJSONParser(opts...), nil
 	default:
-		return nil, &FormatError{Format: cfg.Format}
+		return nil, &FormatError{Name: fmt.Sprintf("%d", f)}
 	}
 }
