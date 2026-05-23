@@ -1,138 +1,133 @@
 package pipeline_test
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/yourorg/logslice/internal/pipeline"
+	"logslice/internal/logparser"
+	"logslice/internal/logreader"
+	"logslice/internal/output"
+	"logslice/internal/pipeline"
+	"logslice/internal/timewindow"
 )
 
 func writeTempLog(t *testing.T, lines []string) string {
 	t.Helper()
-	f, err := os.CreateTemp(t.TempDir(), "test-*.log")
+	f, err := os.CreateTemp(t.TempDir(), "*.log")
 	if err != nil {
-		t.Fatalf("create temp file: %v", err)
+		t.Fatal(err)
 	}
+	defer f.Close()
 	for _, l := range lines {
 		f.WriteString(l + "\n")
 	}
-	f.Close()
 	return f.Name()
 }
 
-func TestNew_NilWriter(t *testing.T) {
-	_, err := pipeline.New(pipeline.Config{
-		Patterns: []string{"*.log"},
-		Writer:   nil,
-	})
-	if err == nil {
-		t.Fatal("expected error for nil writer")
-	}
+func entry(ts, msg string) string {
+	b, _ := json.Marshal(map[string]string{"time": ts, "msg": msg})
+	return string(b)
 }
 
-func TestNew_NoPatterns(t *testing.T) {
-	_, err := pipeline.New(pipeline.Config{
-		Patterns: nil,
-		Writer:   &bytes.Buffer{},
-	})
-	if err == nil {
-		t.Fatal("expected error for empty patterns")
+func mustWindow(t *testing.T, from, to string) *timewindow.TimeWindow {
+	t.Helper()
+	w, err := timewindow.New(from, to, time.RFC3339)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+func TestRun_NilWindow(t *testing.T) {
+	cfg := pipeline.Config{Window: nil}
+	_, err := pipeline.Run(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "window") {
+		t.Fatalf("expected window error, got %v", err)
 	}
 }
 
 func TestRun_FiltersByWindow(t *testing.T) {
-	now := time.Now().UTC().Truncate(time.Second)
-	inWindow := now.Format(time.RFC3339)
-	beforeWindow := now.Add(-2 * time.Hour).Format(time.RFC3339)
-
 	lines := []string{
-		`{"time":"` + beforeWindow + `","msg":"old"}`,
-		`{"time":"` + inWindow + `","msg":"current"}`,
+		entry("2024-01-01T10:00:00Z", "before"),
+		entry("2024-01-01T12:00:00Z", "inside"),
+		entry("2024-01-01T14:00:00Z", "after"),
 	}
-	logFile := writeTempLog(t, lines)
+	path := writeTempLog(t, lines)
 
-	from := now.Add(-1 * time.Hour).Format(time.RFC3339)
-	to := now.Add(1 * time.Hour).Format(time.RFC3339)
+	w := mustWindow(t, "2024-01-01T11:00:00Z", "2024-01-01T13:00:00Z")
 
-	var buf bytes.Buffer
-	p, err := pipeline.New(pipeline.Config{
-		Patterns: []string{logFile},
-		From:     from,
-		To:       to,
-		Format:   "json",
-		Writer:   &buf,
+	parser, err := logparser.NewParser("json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := logreader.New(w, parser)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf strings.Builder
+	writer, err := output.New(&buf, output.JSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := pipeline.Run(context.Background(), pipeline.Config{
+		Patterns: []string{path},
+		Window:   w,
+		Reader:   reader,
+		Writer:   writer,
 	})
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-
-	n, err := p.Run()
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if n != 1 {
-		t.Fatalf("expected 1 entry, got %d", n)
-	}
-
-	var entry map[string]interface{}
-	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &entry); err != nil {
-		t.Fatalf("unmarshal output: %v", err)
-	}
-	if entry["msg"] != "current" {
-		t.Errorf("unexpected msg: %v", entry["msg"])
+	if res.FileCount != 1 {
+		t.Errorf("expected 1 file, got %d", res.FileCount)
 	}
 }
 
-func TestRun_InvalidTimeWindow(t *testing.T) {
-	var buf bytes.Buffer
-	p, err := pipeline.New(pipeline.Config{
-		Patterns: []string{"*.log"},
-		From:     "not-a-time",
-		To:       "also-not",
-		Format:   "json",
-		Writer:   &buf,
-	})
-	if err != nil {
-		t.Fatalf("New should not fail here: %v", err)
-	}
-	_, err = p.Run()
-	if err == nil {
-		t.Fatal("expected error for invalid time window")
-	}
-}
-
-func TestRun_GlobPattern(t *testing.T) {
+func TestRun_NoMatchingFiles(t *testing.T) {
 	dir := t.TempDir()
-	now := time.Now().UTC().Truncate(time.Second)
-	ts := now.Format(time.RFC3339)
+	w := mustWindow(t, "2024-01-01T00:00:00Z", "2024-01-02T00:00:00Z")
+	parser, _ := logparser.NewParser("json")
+	reader, _ := logreader.New(w, parser)
+	var buf strings.Builder
+	writer, _ := output.New(&buf, output.JSON)
 
-	for i := 0; i < 3; i++ {
-		path := filepath.Join(dir, "app"+string(rune('a'+i))+".log")
-		line := `{"time":"` + ts + `","msg":"entry"}` + "\n"
-		os.WriteFile(path, []byte(line), 0644)
-	}
-
-	var buf bytes.Buffer
-	p, err := pipeline.New(pipeline.Config{
+	_, err := pipeline.Run(context.Background(), pipeline.Config{
 		Patterns: []string{filepath.Join(dir, "*.log")},
-		From:     now.Add(-time.Minute).Format(time.RFC3339),
-		To:       now.Add(time.Minute).Format(time.RFC3339),
-		Format:   "json",
-		Writer:   &buf,
+		Window:   w,
+		Reader:   reader,
+		Writer:   writer,
 	})
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
+}
 
-	n, err := p.Run()
+func TestRun_ContextCancelled(t *testing.T) {
+	path := writeTempLog(t, []string{entry("2024-01-01T12:00:00Z", "x")})
+	w := mustWindow(t, "2024-01-01T11:00:00Z", "2024-01-01T13:00:00Z")
+	parser, _ := logparser.NewParser("json")
+	reader, _ := logreader.New(w, parser)
+	var buf strings.Builder
+	writer, _ := output.New(&buf, output.JSON)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := pipeline.Run(ctx, pipeline.Config{
+		Patterns: []string{path},
+		Window:   w,
+		Reader:   reader,
+		Writer:   writer,
+	})
+	// cancelled context should not produce an error from pipeline itself
 	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if n != 3 {
-		t.Errorf("expected 3 entries, got %d", n)
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

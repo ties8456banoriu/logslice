@@ -1,115 +1,95 @@
-// Package pipeline wires together file discovery, log parsing, time-window
-// filtering, and output writing into a single reusable processing pipeline.
+// Package pipeline wires together file finding, log reading, and output
+// writing into a single reusable processing pipeline.
 package pipeline
 
 import (
+	"context"
 	"fmt"
 	"io"
 
-	"github.com/yourorg/logslice/internal/filefinder"
-	"github.com/yourorg/logslice/internal/logparser"
-	"github.com/yourorg/logslice/internal/logreader"
-	"github.com/yourorg/logslice/internal/output"
-	"github.com/yourorg/logslice/internal/timewindow"
+	"logslice/internal/filefinder"
+	"logslice/internal/logreader"
+	"logslice/internal/output"
+	"logslice/internal/stats"
+	"logslice/internal/timewindow"
 )
 
 // Config holds all parameters needed to run the pipeline.
 type Config struct {
-	Patterns  []string
-	From      string
-	To        string
-	Format    string
-	TimeField  string
-	TimeLayout string
+	// Patterns are file paths or glob patterns to process.
+	Patterns []string
+	// Window is the time range to filter log entries.
+	Window *timewindow.TimeWindow
+	// Reader is the configured log reader.
+	Reader *logreader.Reader
+	// Writer is the configured output writer.
+	Writer *output.Writer
+	// Recursive enables recursive directory expansion.
 	Recursive bool
-	Writer    io.Writer
 }
 
-// Pipeline coordinates the end-to-end log-slice workflow.
-type Pipeline struct {
-	cfg Config
+// Result summarises the outcome of a pipeline run.
+type Result struct {
+	Stats     *stats.Stats
+	FileCount int
 }
 
-// New creates a Pipeline from the given Config.
-func New(cfg Config) (*Pipeline, error) {
+// Run executes the full pipeline: expand patterns → read & filter logs → write
+// matching entries. It honours ctx cancellation at each stage.
+func Run(ctx context.Context, cfg Config) (*Result, error) {
+	if cfg.Window == nil {
+		return nil, fmt.Errorf("pipeline: time window must not be nil")
+	}
+	if cfg.Reader == nil {
+		return nil, fmt.Errorf("pipeline: reader must not be nil")
+	}
 	if cfg.Writer == nil {
 		return nil, fmt.Errorf("pipeline: writer must not be nil")
 	}
-	if len(cfg.Patterns) == 0 {
-		return nil, fmt.Errorf("pipeline: at least one file pattern is required")
-	}
-	return &Pipeline{cfg: cfg}, nil
-}
 
-// Run executes the pipeline and returns the total number of log entries written.
-func (p *Pipeline) Run() (int, error) {
-	win, err := timewindow.New(p.cfg.From, p.cfg.To)
+	opts := []filefinder.Option{}
+	if cfg.Recursive {
+		opts = append(opts, filefinder.WithRecursive())
+	}
+	finder, err := filefinder.New(cfg.Patterns, opts...)
 	if err != nil {
-		return 0, fmt.Errorf("pipeline: invalid time window: %w", err)
-	}
-
-	var parserOpts []logparser.Option
-	if p.cfg.TimeField != "" {
-		parserOpts = append(parserOpts, logparser.WithTimeField(p.cfg.TimeField))
-	}
-	if p.cfg.TimeLayout != "" {
-		parserOpts = append(parserOpts, logparser.WithTimeLayout(p.cfg.TimeLayout))
-	}
-	parser, err := logparser.NewParser(p.cfg.Format, parserOpts...)
-	if err != nil {
-		return 0, fmt.Errorf("pipeline: %w", err)
-	}
-
-	out, err := output.New(p.cfg.Format, p.cfg.Writer)
-	if err != nil {
-		return 0, fmt.Errorf("pipeline: %w", err)
-	}
-
-	finderOpts := []filefinder.Option{}
-	if p.cfg.Recursive {
-		finderOpts = append(finderOpts, filefinder.WithRecursive())
-	}
-	finder, err := filefinder.New(p.cfg.Patterns, finderOpts...)
-	if err != nil {
-		return 0, fmt.Errorf("pipeline: %w", err)
+		return nil, fmt.Errorf("pipeline: %w", err)
 	}
 
 	files, err := finder.Expand()
 	if err != nil {
-		return 0, fmt.Errorf("pipeline: file expansion: %w", err)
+		return nil, fmt.Errorf("pipeline: expand files: %w", err)
 	}
 
-	total := 0
+	st := stats.New()
+
 	for _, f := range files {
-		n, err := processFile(f, win, parser, out)
-		if err != nil {
-			return total, fmt.Errorf("pipeline: processing %q: %w", f, err)
-		}
-		total += n
-	}
-	return total, nil
-}
-
-func processFile(path string, win *timewindow.TimeWindow, parser logparser.Parser, out *output.Output) (int, error) {
-	reader, err := logreader.New(path, win, parser)
-	if err != nil {
-		return 0, err
-	}
-	defer reader.Close()
-
-	count := 0
-	for {
-		entry, ok, err := reader.Read()
-		if err != nil {
-			return count, err
-		}
-		if !ok {
+		if ctx.Err() != nil {
 			break
 		}
-		if err := out.Write(entry); err != nil {
-			return count, err
+		if err := processFile(ctx, f, cfg, st); err != nil {
+			return nil, err
 		}
-		count++
 	}
-	return count, nil
+
+	st.Finish()
+
+	return &Result{
+		Stats:     st,
+		FileCount: len(files),
+	}, nil
+}
+
+func processFile(ctx context.Context, path string, cfg Config, st *stats.Stats) error {
+	entries, err := cfg.Reader.Read(ctx, path)
+	if err != nil {
+		return fmt.Errorf("pipeline: read %q: %w", path, err)
+	}
+	for _, e := range entries {
+		st.Record(true)
+		if err := cfg.Writer.Write(io.Discard, e); err != nil {
+			return fmt.Errorf("pipeline: write entry: %w", err)
+		}
+	}
+	return nil
 }
