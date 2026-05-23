@@ -1,70 +1,82 @@
-package logparser
+package logparser_test
 
 import (
 	"strings"
 	"testing"
+
+	"logslice/internal/logparser"
 )
 
 func TestNewParser_JSONFormat(t *testing.T) {
-	f, err := ParseFormat("json")
+	p, err := logparser.NewParser(logparser.FormatJSON)
 	if err != nil {
-		t.Fatalf("ParseFormat: unexpected error: %v", err)
-	}
-	p, err := NewParser(f)
-	if err != nil {
-		t.Fatalf("NewParser: unexpected error: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if p == nil {
-		t.Fatal("NewParser: expected non-nil parser")
+		t.Fatal("expected non-nil parser")
 	}
 }
 
 func TestNewParser_UnsupportedFormat(t *testing.T) {
-	_, err := ParseFormat("xml")
+	_, err := logparser.NewParser(logparser.Format(99))
 	if err == nil {
-		t.Fatal("ParseFormat: expected error for unsupported format")
+		t.Fatal("expected error for unsupported format")
 	}
-	if !containsStr(err.Error(), "xml") {
-		t.Errorf("error message should mention format name, got: %s", err.Error())
+	if !containsStr(err.Error(), "unsupported format") {
+		t.Errorf("unexpected error message: %v", err)
 	}
 }
 
 func TestFormatError_Message(t *testing.T) {
-	e := &FormatError{Name: "csv"}
-	if !containsStr(e.Error(), "csv") {
-		t.Errorf("FormatError.Error() should contain format name, got: %s", e.Error())
+	_, err := logparser.ParseFormat("xml")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !containsStr(err.Error(), "xml") {
+		t.Errorf("error should mention the bad value, got: %v", err)
+	}
+	if !containsStr(err.Error(), "json") {
+		t.Errorf("error should list supported formats, got: %v", err)
 	}
 }
 
-func contains(s, sub string) bool {
-	return strings.Contains(s, sub)
+func contains(t *testing.T, haystack, needle string) bool {
+	t.Helper()
+	return strings.Contains(haystack, needle)
 }
 
-func containsStr(s, sub string) bool {
-	return strings.Contains(s, sub)
+func containsStr(haystack, needle string) bool {
+	return strings.Contains(haystack, needle)
 }
 
-func TestParseFormat_CaseInsensitive(t *testing.T) {
-	cases := []string{"json", "JSON", "Json"}
-	for _, c := range cases {
-		t.Run(c, func(t *testing.T) {
-			// Only lowercase is supported; verify upper/mixed returns error
-			// or succeeds depending on implementation.
-			_, err := ParseFormat(strings.ToLower(c))
+func TestParseFormat_ValidInputs(t *testing.T) {
+	cases := []struct {
+		input string
+		want  logparser.Format
+	}{
+		{"json", logparser.FormatJSON},
+		{"JSON", logparser.FormatJSON},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			got, err := logparser.ParseFormat(tc.input)
 			if err != nil {
-				t.Errorf("ParseFormat(%q): unexpected error: %v", strings.ToLower(c), err)
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestNewParser_WithOptions(t *testing.T) {
-	f, _ := ParseFormat("json")
-	p, err := NewParser(f, WithTimeField("timestamp"))
-	if err != nil {
-		t.Fatalf("NewParser with options: unexpected error: %v", err)
-	}
-	if p == nil {
-		t.Fatal("expected non-nil parser")
+func TestParseFormat_InvalidInput(t *testing.T) {
+	for _, s := range []string{"", "csv", "text", "xml"} {
+		t.Run(s, func(t *testing.T) {
+			_, err := logparser.ParseFormat(s)
+			if err == nil {
+				t.Fatalf("expected error for %q", s)
+			}
+		})
 	}
 }

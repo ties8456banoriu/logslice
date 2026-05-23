@@ -1,23 +1,26 @@
 package logparser
 
-// options holds configuration for parser construction.
+import "time"
+
+// options holds configuration for a Parser.
 type options struct {
 	timeField  string
 	timeLayout string
 }
 
-// defaultOptions returns sensible defaults for parser options.
-func defaultOptions() options {
-	return options{
-		timeField:  "time",
-		timeLayout: "2006-01-02T15:04:05Z07:00",
-	}
-}
-
 // Option is a functional option for configuring a Parser.
 type Option func(*options)
 
-// WithTimeField sets the JSON key used to extract the log timestamp.
+// defaultOptions returns options pre-filled with sensible defaults.
+func defaultOptions() options {
+	return options{
+		timeField:  "time",
+		timeLayout: time.RFC3339,
+	}
+}
+
+// WithTimeField overrides the JSON key used to extract the log timestamp.
+// An empty value is silently ignored.
 func WithTimeField(field string) Option {
 	return func(o *options) {
 		if field != "" {
@@ -26,7 +29,8 @@ func WithTimeField(field string) Option {
 	}
 }
 
-// WithTimeLayout sets the time.Parse layout used when parsing timestamps.
+// WithTimeLayout overrides the time.Parse layout used to parse the timestamp.
+// An empty value is silently ignored.
 func WithTimeLayout(layout string) Option {
 	return func(o *options) {
 		if layout != "" {

@@ -6,41 +6,47 @@ import "fmt"
 type Format int
 
 const (
-	// FormatJSON represents newline-delimited JSON log format.
+	// FormatJSON represents newline-delimited JSON logs.
 	FormatJSON Format = iota
 )
 
-// FormatError is returned when an unsupported format is requested.
+// String returns the string representation of the Format.
+func (f Format) String() string {
+	switch f {
+	case FormatJSON:
+		return "json"
+	default:
+		return fmt.Sprintf("Format(%d)", int(f))
+	}
+}
+
+// FormatError is returned when an unsupported format string is provided.
 type FormatError struct {
-	Name string
+	Value string
 }
 
 func (e *FormatError) Error() string {
-	return fmt.Sprintf("logparser: unsupported format %q", e.Name)
+	return fmt.Sprintf("logparser: unsupported format %q; supported formats: json", e.Value)
 }
 
-// formatNames maps string names to Format constants.
-var formatNames = map[string]Format{
-	"json": FormatJSON,
-}
-
-// ParseFormat converts a string name to a Format constant.
-// It returns a FormatError if the name is not recognised.
-func ParseFormat(name string) (Format, error) {
-	f, ok := formatNames[name]
-	if !ok {
-		return 0, &FormatError{Name: name}
+// ParseFormat converts a string to a Format constant.
+// It returns a FormatError if the format is not recognised.
+func ParseFormat(s string) (Format, error) {
+	switch s {
+	case "json", "JSON":
+		return FormatJSON, nil
+	default:
+		return 0, &FormatError{Value: s}
 	}
-	return f, nil
 }
 
-// NewParser constructs a Parser for the given Format.
-// It returns a FormatError for unrecognised formats.
+// NewParser returns a Parser for the given Format, applying any Options.
+// It returns a FormatError if the format is not supported.
 func NewParser(f Format, opts ...Option) (Parser, error) {
 	switch f {
 	case FormatJSON:
 		return NewJSONParser(opts...), nil
 	default:
-		return nil, &FormatError{Name: fmt.Sprintf("%d", f)}
+		return nil, &FormatError{Value: f.String()}
 	}
 }
