@@ -1,11 +1,12 @@
-// Package stats provides a lightweight counter for tracking logslice
-// processing metrics such as files processed, lines read, lines matched,
-// and elapsed time.
+// Package stats tracks processing metrics for a logslice run,
+// including file counts, line counts, match counts, and elapsed time.
 //
 // Usage:
 //
-//	c := stats.New()
-//	// ... process files, incrementing c.FilesProcessed, c.LinesRead, etc.
-//	c.Finish()
-//	c.Print(os.Stderr)
+//	s := stats.New()
+//	s.AddFile()
+//	s.AddLine()
+//	s.AddMatch()
+//	s.Finish()
+//	fmt.Println(s.Summary())
 package stats
